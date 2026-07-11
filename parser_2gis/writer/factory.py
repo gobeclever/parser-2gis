@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from .writers import CSVWriter, XLSXWriter, FileWriter, JSONWriter
+from .writers import CSVWriter, XLSXWriter, FileWriter, JSONWriter, JSONLinesWriter
 
 from .exceptions import WriterUnknownFileFormat
 
@@ -24,6 +24,8 @@ def get_writer(file_path: str, file_format: str, writer_options: WriterOptions) 
 
     if file_format == 'json':
         return JSONWriter(file_path, writer_options)
+    elif file_format == 'jsonl':
+        return JSONLinesWriter(file_path, writer_options)
     elif file_format == 'csv':
         return CSVWriter(file_path, writer_options)
     elif file_format == 'xlsx':

@@ -57,10 +57,28 @@ class CSVWriter(FileWriter):
         return {
             **data_mapping,
             **{
+                'id': 'ID объекта',
                 'point_lat': 'Широта',
                 'point_lon': 'Долгота',
+                'building_id': 'ID здания',
+                'building_name': 'Название здания',
+                'floor_id': 'ID этажа',
+                'branch_count': 'Количество филиалов',
+                'org_id': 'ID сети',
+                'org_name': 'Название сети',
+                'org_specialization': 'Специализация сети',
+                'primary_rubric': 'Главная рубрика',
+                'poi_category': 'POI-категория',
+                'rubric_count': 'Кол-во рубрик',
+                'attributes_count': 'Кол-во атрибутов',
+                'updated_at': 'Дата обновления',
+                'is_deleted': 'Удалён',
+                'segment_id': 'ID сегмента',
+                'region_id': 'ID региона',
                 'url': '2GIS URL',
                 'type': 'Тип',
+                'expected_count': 'Ожидаемое кол-во (2GIS)',
+                'source_url': 'Ссылка запроса',
             }
         }
 
@@ -71,6 +89,9 @@ class CSVWriter(FileWriter):
 
         try:
             self._writer.writerow(row)
+            # Flush to the OS right away so an abrupt crash keeps all
+            # records written so far (cheap: no forced disk sync).
+            self._file.flush()
         except Exception as e:
             logger.error('Ошибка во время записи: %s', e)
 
@@ -166,6 +187,136 @@ class CSVWriter(FileWriter):
             self._writerow(row)
             self._wrote_count += 1
 
+    def _extract_fallback(self, item: dict[str, Any]) -> dict[str, Any]:
+        """Defensive extraction straight from the raw item dict.
+
+        Used when strict model validation fails: instead of losing the whole
+        record, we salvage as many fields as possible (each read is guarded,
+        so nothing here can raise). Priority fields — name, address, coords,
+        rubrics, category — are almost always present and get filled.
+        """
+        data: dict[str, Any] = {k: None for k in self._data_mapping.keys()}
+
+        def g(d: Any, *keys: str) -> Any:
+            """Safe nested get."""
+            for k in keys:
+                if not isinstance(d, dict):
+                    return None
+                d = d.get(k)
+            return d
+
+        try:
+            # Name / description
+            name_ex = item.get('name_ex') or {}
+            if name_ex.get('primary'):
+                data['name'] = name_ex.get('primary')
+                data['description'] = name_ex.get('extension')
+            elif item.get('name'):
+                data['name'] = item.get('name')
+            elif item.get('type') in self._type_names:
+                data['name'] = self._type_names[item['type']]
+
+            data['type'] = item.get('type')
+            data['address'] = item.get('address_name')
+            data['address_comment'] = item.get('address_comment')
+
+            # Reviews
+            data['general_rating'] = g(item, 'reviews', 'general_rating')
+            data['general_review_count'] = g(item, 'reviews', 'general_review_count')
+
+            # Point
+            data['point_lat'] = g(item, 'point', 'lat')
+            data['point_lon'] = g(item, 'point', 'lon')
+
+            # Address details
+            data['postcode'] = g(item, 'address', 'postcode')
+            data['building_id'] = g(item, 'address', 'building_id')
+            data['building_name'] = g(item, 'address', 'building_name')
+
+            # Timezone
+            offset = item.get('timezone_offset')
+            if isinstance(offset, int):
+                sign = '-' if offset < 0 else '+'
+                m = abs(offset)
+                data['timezone'] = '{}{:02d}:{:02d}'.format(sign, m // 60, m % 60)
+
+            # Administrative division
+            for div in item.get('adm_div') or []:
+                t = div.get('type')
+                if t in ('country', 'region', 'district_area', 'city', 'district', 'living_area') and div.get('name'):
+                    data[t] = div.get('name')
+
+            # Identity / URL
+            iid = item.get('id')
+            if isinstance(iid, str):
+                data['id'] = iid.split('_')[0]
+                data['url'] = 'https://2gis.com/firm/%s' % iid.split('_')[0]
+            data['floor_id'] = item.get('floor_id')
+            data['segment_id'] = item.get('segment_id')
+            data['region_id'] = item.get('region_id')
+            data['is_deleted'] = item.get('is_deleted')
+
+            # Organization / chain
+            org = item.get('org') or {}
+            if org:
+                data['branch_count'] = org.get('branch_count')
+                data['org_id'] = org.get('id')
+                data['org_name'] = org.get('primary') or org.get('name')
+                data['org_specialization'] = org.get('extension')
+
+            # Rubrics
+            rubrics = item.get('rubrics') or []
+            if self._options.csv.add_rubrics:
+                data['rubrics'] = self._options.csv.join_char.join(
+                    r.get('name') for r in rubrics if r.get('name'))
+            data['primary_rubric'] = next(
+                (r.get('name') for r in rubrics if r.get('kind') == 'primary'), None)
+            data['rubric_count'] = len(rubrics)
+
+            # POI category
+            data['poi_category'] = item.get('poi_category')
+
+            # Attributes count
+            data['attributes_count'] = sum(
+                len(grp.get('attributes') or []) for grp in item.get('attribute_groups') or [])
+
+            # Update date
+            data['updated_at'] = g(item, 'dates', 'updated_at')
+
+            # Contacts (best-effort, simplified)
+            counters: dict[str, int] = {}
+            url_types = ('website', 'vkontakte', 'whatsapp', 'viber', 'telegram',
+                         'instagram', 'facebook', 'twitter', 'youtube', 'skype')
+            for grp in item.get('contact_groups') or []:
+                for c in grp.get('contacts') or []:
+                    ctype = c.get('type')
+                    if ctype not in self._complex_mapping:
+                        continue
+                    if ctype == 'phone':
+                        raw = c.get('text') or c.get('value')
+                        val = re.sub(r'^\+7', '8', re.sub(r'[^0-9+]', '', raw)) if raw else None
+                    elif ctype in url_types:
+                        val = c.get('url') or c.get('value')
+                    else:
+                        val = c.get('value') or c.get('url')
+                    if not val:
+                        continue
+                    if ctype == 'whatsapp':
+                        val = val.split('?')[0]
+                    counters[ctype] = counters.get(ctype, 0) + 1
+                    col = f'{ctype}_{counters[ctype]}'
+                    if col in data:
+                        data[col] = val
+        except Exception as e:
+            # Should never happen (all reads are guarded), but never let the
+            # salvage path itself break the run.
+            logger.error('Ошибка резервного извлечения: %s', e)
+
+        # Meta columns
+        data['expected_count'] = self._expected_count
+        data['source_url'] = self._source_url
+        return data
+
     def _extract_raw(self, catalog_doc: Any) -> dict[str, Any]:
         """Extract data from Catalog Item API JSON document.
 
@@ -189,11 +340,13 @@ class CSVWriter(FileWriter):
                 error_msg = description['error_message']
                 errors.append(f'[*] Поле: {path}, значение: {arg}, ошибка: {error_msg}')
 
-            error_str = 'Ошибка парсинга:\n' + '\n'.join(errors)
-            error_str += '\nДокумент каталога: ' + str(catalog_doc)
-            logger.error(error_str)
-
-            return {}
+            # Don't drop the whole record over one bad/missing field — log a
+            # warning and fall back to a defensive extraction straight from the
+            # raw JSON, so key fields (name, address, coords, rubrics, category)
+            # are still saved.
+            logger.warning('Частичная запись (проблема валидации): %s',
+                           '; '.join(errors))
+            return self._extract_fallback(item)
 
         # Name, description
         if catalog_item.name_ex:
@@ -223,9 +376,11 @@ class CSVWriter(FileWriter):
         # Address comment
         data['address_comment'] = catalog_item.address_comment
 
-        # Post code
+        # Post code, building
         if catalog_item.address:
             data['postcode'] = catalog_item.address.postcode
+            data['building_id'] = catalog_item.address.building_id
+            data['building_name'] = catalog_item.address.building_name
 
         # Timezone
         if catalog_item.timezone is not None:
@@ -239,6 +394,45 @@ class CSVWriter(FileWriter):
 
         # Item URL
         data['url'] = catalog_item.url
+
+        # Organization / chain (network) info
+        if catalog_item.org:
+            data['branch_count'] = catalog_item.org.branch_count
+            data['org_id'] = catalog_item.org.id
+            data['org_name'] = catalog_item.org.primary or catalog_item.org.name
+            data['org_specialization'] = catalog_item.org.extension
+
+        # Primary (main) rubric — the one 2GIS marks as `kind == 'primary'`
+        primary_rubric = next((x.name for x in catalog_item.rubrics
+                               if x.kind == 'primary'), None)
+        if primary_rubric:
+            data['primary_rubric'] = primary_rubric
+
+        # POI category (e.g. "fastfood", "bar")
+        data['poi_category'] = catalog_item.poi_category
+
+        # Object identity / administrative ids.
+        # The part after "_" is an unstable per-response token, so we keep only
+        # the stable firm id (same one used in the 2GIS URL) — good for dedup/counting.
+        data['id'] = catalog_item.id.split('_')[0]
+        data['floor_id'] = catalog_item.floor_id
+        data['segment_id'] = catalog_item.segment_id
+        data['region_id'] = catalog_item.region_id
+        data['is_deleted'] = catalog_item.is_deleted
+
+        # Functional-richness metrics
+        data['rubric_count'] = len(catalog_item.rubrics)
+        data['attributes_count'] = sum(len(g.attributes) for g in catalog_item.attribute_groups)
+
+        # Last update date
+        if catalog_item.dates:
+            data['updated_at'] = catalog_item.dates.updated_at
+
+        # Expected total count reported by 2GIS for the query (for verification)
+        data['expected_count'] = self._expected_count
+
+        # Source query URL (which parsed link this item came from)
+        data['source_url'] = self._source_url
 
         # Contacts
         for contact_group in catalog_item.contact_groups:

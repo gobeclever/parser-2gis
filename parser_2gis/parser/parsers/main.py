@@ -136,6 +136,45 @@ class MainParser:
 
         return None
 
+    def _read_expected_count(self, writer: FileWriter) -> None:
+        """Read the total number of found items reported by 2GIS
+        (shown on the page as "Найдено N") from the search page state
+        and pass it to the writer.
+
+        The first results page is server-rendered, so the count lives in
+        `window.initialState.data.search.profile.<id>.data.total` rather than
+        in a network response. Best-effort: never breaks parsing if absent.
+        """
+        script = r'''
+            (function() {
+                try {
+                    var prof = window.initialState.data.search.profile;
+                    for (var k in prof) {
+                        var d = prof[k] && prof[k].data;
+                        if (d && typeof d.total === 'number') return d.total;
+                    }
+                } catch (e) {}
+                return null;
+            })();
+        '''
+        try:
+            total = None
+            # `initialState` is populated by an inline script during page load,
+            # which may not be ready the instant navigate() returns — poll briefly.
+            for _ in range(20):  # up to ~10 seconds
+                total = self._chrome_remote.execute_script(script)
+                if total is not None:
+                    break
+                self._chrome_remote.wait(0.5)
+
+            if total is not None:
+                writer.set_expected_count(int(total))
+                logger.info('2GIS сообщает об ожидаемом количестве точек: %s', total)
+            else:
+                logger.debug('Не удалось определить ожидаемое количество точек.')
+        except Exception:
+            pass
+
     def parse(self, writer: FileWriter) -> None:
         """Parse URL with result items.
 
@@ -172,6 +211,9 @@ class MainParser:
 
             if self._options.skip_404_response:
                 return
+
+        # Read expected total count reported by 2GIS ("Найдено N")
+        self._read_expected_count(writer)
 
         # Parsed records
         collected_records = 0

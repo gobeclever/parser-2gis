@@ -6,7 +6,9 @@ from pydantic import BaseModel
 
 from .address import Address
 from .adm_div_item import AdmDivItem
+from .attribute_group import AttributeGroup
 from .contact_group import ContactGroup
+from .dates import Dates
 from .name_ex import NameEx
 from .org import Org
 from .point import Point
@@ -72,6 +74,18 @@ class CatalogItem(BaseModel):
 
     # Тип объекта
     type: str
+
+    # Категория POI (например "fastfood", "bar")
+    poi_category: Optional[str] = None
+
+    # Идентификатор этажа (для объектов внутри зданий/ТЦ)
+    floor_id: Optional[str] = None
+
+    # Даты создания/обновления записи
+    dates: Optional[Dates] = None
+
+    # Группы атрибутов (услуги/особенности) — используем их количество
+    attribute_groups: List[AttributeGroup] = []
 
     # Признак удаленного объекта
     is_deleted: Optional[bool] = None

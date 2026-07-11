@@ -22,6 +22,7 @@ class CLIRunner(AbstractRunner):
             with get_writer(self._output_path, self._format, self._config.writer) as writer:
                 for url in self._urls:
                     logger.info(f'Парсинг ссылки {url}')
+                    writer.set_source_url(url)
                     with get_parser(url,
                                     chrome_options=self._config.chrome,
                                     parser_options=self._config.parser) as parser:

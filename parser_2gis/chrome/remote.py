@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import os
 import queue
 import re
 import threading
@@ -25,6 +26,25 @@ if TYPE_CHECKING:
 
 # Apply all custom patches
 patch_all()
+
+
+def _bypass_proxy_for_localhost() -> None:
+    """Make `requests` (used by pychrome and this module to talk to the
+    Chrome DevTools HTTP endpoint on 127.0.0.1) ignore any system/corporate
+    proxy for local addresses. Without this, a configured proxy intercepts
+    the local control channel and the connection fails (502 / reset),
+    even though Chrome itself is listening fine."""
+    locals_ = '127.0.0.1,localhost,::1'
+    for var in ('no_proxy', 'NO_PROXY'):
+        current = os.environ.get(var, '')
+        parts = [p.strip() for p in current.split(',') if p.strip()]
+        for host in locals_.split(','):
+            if host not in parts:
+                parts.append(host)
+        os.environ[var] = ','.join(parts)
+
+
+_bypass_proxy_for_localhost()
 
 
 class ChromeRemote:
@@ -200,17 +220,26 @@ class ChromeRemote:
             """V8 OOM could crash Chrome's tab and keep websocket functional
             like nothing bad happened, so we better monitor tabs index page
             and check if our tab is still alive."""
-            while not self._chrome_tab._stopped.is_set():
-                try:
-                    ret = requests.get('%s/json' % self._dev_url, json=True)
-                    if not any(x['id'] == self._chrome_tab.id for x in ret.json()):
-                        nonlocal tab_detached
-                        tab_detached = True
-                        self._chrome_tab._stopped.set()
+            # Reuse a single keep-alive connection instead of opening a new
+            # socket every poll. Otherwise, on long runs Windows runs out of
+            # socket buffers / ephemeral ports (WinError 10055).
+            session = requests.Session()
+            try:
+                while not self._chrome_tab._stopped.is_set():
+                    try:
+                        ret = session.get('%s/json' % self._dev_url, json=True)
+                        if not any(x['id'] == self._chrome_tab.id for x in ret.json()):
+                            nonlocal tab_detached
+                            tab_detached = True
+                            self._chrome_tab._stopped.set()
+                    except RequestException:
+                        # Transient local socket errors (e.g. WinError 10055)
+                        # must not kill monitoring — pause and retry.
+                        pass
 
                     self._chrome_tab._stopped.wait(0.5)
-                except ConnectionError:
-                    break
+            finally:
+                session.close()
 
         self._ping_thread = threading.Thread(target=monitor_tab, daemon=True)
         self._ping_thread.start()

@@ -14,6 +14,18 @@ class FileWriter(ABC):
     def __init__(self, file_path: str, writer_options: WriterOptions) -> None:
         self._file_path = file_path
         self._options = writer_options
+        self._source_url: str | None = None
+        self._expected_count: int | None = None
+
+    def set_source_url(self, url: str | None) -> None:
+        """Set the currently parsed source URL so it can be
+        saved alongside each record (which query the item came from)."""
+        self._source_url = url
+
+    def set_expected_count(self, count: int | None) -> None:
+        """Set the total number of items 2GIS reports for the current query
+        (shown on the page as "Найдено N") — saved for verification."""
+        self._expected_count = count
 
     @abstractmethod
     def write(self, catalog_doc: Any) -> None:

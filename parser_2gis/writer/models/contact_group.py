@@ -49,8 +49,9 @@ class Contact(BaseModel):
 
 
 class ContactGroup(BaseModel):
-    # Список контактов
-    contacts: List[Contact]
+    # Список контактов. Может отсутствовать — иногда группа содержит только
+    # `schedule` (график работы конкретного филиала) без контактов.
+    contacts: List[Contact] = []
 
     # Расписание группы контактов
     schedule: Optional[Schedule] = None

@@ -98,7 +98,7 @@ def parse_arguments() -> tuple[argparse.Namespace, Configuration]:
     main_parser = arg_parser.add_argument_group(main_parser_name)
     main_parser.add_argument('-i', '--url', nargs='+', default=None, required=main_parser_required, help='URL с выдачей')
     main_parser.add_argument('-o', '--output-path', metavar='PATH', default=None, required=main_parser_required, help='Путь до результирующего файла')
-    main_parser.add_argument('-f', '--format', metavar='{csv,xlsx,json}', choices=['csv', 'xlsx', 'json'], default=None, required=main_parser_required, help='Формат результирующего файла')
+    main_parser.add_argument('-f', '--format', metavar='{csv,xlsx,json,jsonl}', choices=['csv', 'xlsx', 'json', 'jsonl'], default=None, required=main_parser_required, help='Формат результирующего файла')
 
     browser_parser = arg_parser.add_argument_group('Аргументы браузера')
     browser_parser.add_argument('--chrome.binary_path', metavar='PATH', help='Путь до исполняемого файла браузера. Если не указан, то определяется автоматически')

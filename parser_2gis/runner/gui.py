@@ -60,6 +60,7 @@ class GUIRunner(AbstractRunner, threading.Thread):
             for url in self._urls:
                 try:
                     logger.info(f'Парсинг ссылки {url}')
+                    writer.set_source_url(url)
                     self._parser = get_parser(url,
                                               chrome_options=self._config.chrome,
                                               parser_options=self._config.parser)
