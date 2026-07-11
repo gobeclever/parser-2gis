@@ -27,3 +27,11 @@ class ParserOptions(BaseModel):
     max_records: PositiveInt = default_max_records()
     use_gc: bool = False
     gc_pages_interval: PositiveInt = 10
+
+    # Retry an unexpectedly empty results page (soft anti-bot) before giving up.
+    empty_page_retries: NonNegativeInt = 3
+    empty_page_retry_delay: NonNegativeInt = 4000  # ms
+
+    # Restart the browser and resume from the current page if the tab crashes
+    # (e.g. Out of Memory). 0 disables recovery.
+    max_browser_restarts: NonNegativeInt = 5

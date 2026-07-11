@@ -4,9 +4,10 @@ import base64
 import json
 import re
 import urllib.parse
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING, Callable, Optional
 
 from ...chrome import ChromeRemote
+from ...chrome.exceptions import ChromeRuntimeException, ChromeUserAbortException
 from ...common import wait_until_finished
 from ...logger import logger
 from ..utils import blocked_requests
@@ -32,14 +33,20 @@ class MainParser:
                  chrome_options: ChromeOptions,
                  parser_options: ParserOptions) -> None:
         self._options = parser_options
+        self._chrome_options = chrome_options
         self._url = url
 
         # "Catalog Item Document" response pattern.
         self._item_response_pattern = r'https://catalog\.api\.2gis.[^/]+/.*/items/byid'
 
         # Open browser, start remote
+        self._start_browser()
+
+    def _start_browser(self) -> None:
+        """Open the browser and set up the remote interface. Called on init
+        and again when the browser needs to be restarted after a crash."""
         response_patterns = [self._item_response_pattern]
-        self._chrome_remote = ChromeRemote(chrome_options=chrome_options,
+        self._chrome_remote = ChromeRemote(chrome_options=self._chrome_options,
                                            response_patterns=response_patterns)
         self._chrome_remote.start()
 
@@ -47,8 +54,16 @@ class MainParser:
         self._add_xhr_counter()
 
         # Disable specific requests
-        blocked_urls = blocked_requests(extended=chrome_options.disable_images)
+        blocked_urls = blocked_requests(extended=self._chrome_options.disable_images)
         self._chrome_remote.add_blocked_requests(blocked_urls)
+
+    def _restart_browser(self) -> None:
+        """Restart the browser (used to recover from a tab crash / OOM)."""
+        try:
+            self._chrome_remote.stop()
+        except Exception:
+            pass
+        self._start_browser()
 
     @staticmethod
     def url_pattern():
@@ -176,23 +191,89 @@ class MainParser:
             pass
 
     def parse(self, writer: FileWriter) -> None:
-        """Parse URL with result items.
+        """Parse URL with result items, recovering from tab crashes.
+
+        If the browser tab crashes (e.g. Out of Memory), the browser is
+        restarted and parsing resumes from the page where it stopped. State
+        (already-visited links, collected count) is kept across restarts, so
+        there are no duplicates and no lost progress.
 
         Args:
             writer: Target file writer.
         """
-        # Starting from page 6 and further
-        # 2GIS redirects user to the beginning automatically (anti-bot protection).
-        # If a page argument found in the URL, we should manually walk to it first.
+        # State that must survive browser restarts.
+        self._visited_links: set[str] = set()
+        self._collected_records = 0
+        self._current_page_number = 1
 
-        current_page_number = 1
+        restarts_left = self._options.max_browser_restarts
+        resume_page: Optional[int] = None
+
+        while True:
+            try:
+                self._parse_url(writer, resume_page)
+                return  # Finished normally
+            except (ChromeRuntimeException, ChromeUserAbortException) as e:
+                # Recover only from a real tab crash / detach.
+                if restarts_left <= 0:
+                    logger.error('Исчерпан лимит перезапусков браузера. Остановка.')
+                    return
+                restarts_left -= 1
+                resume_page = self._current_page_number
+                logger.warning('Вкладка браузера упала (%s). Перезапуск и докачка со страницы %s '
+                               '(осталось попыток: %s).', e, resume_page, restarts_left)
+                self._restart_browser()
+
+    def _retry_empty_page(self, get_unique_links: Callable[[], list[DOMNode]]) -> list[DOMNode]:
+        """Retry an unexpectedly empty results page (soft anti-bot).
+
+        2GIS sometimes serves an empty page during fast automated paging even
+        though more results exist. Wait and re-request the page a few times
+        before treating it as the end of the list.
+        """
+        retries = self._options.empty_page_retries
+        links: list[DOMNode] = []
+        while retries > 0:
+            available = self._get_available_pages()
+            # No pages ahead -> the list really has ended, don't retry.
+            if not available or max(available) <= self._current_page_number:
+                break
+
+            logger.warning('Пустая страница %s при непустой выдаче — повтор (осталось %s).',
+                           self._current_page_number, retries)
+            self._chrome_remote.wait(self._options.empty_page_retry_delay / 1000)
+
+            # Force the current page to be re-requested by hopping to a
+            # neighbouring page and back.
+            neighbour = (self._current_page_number - 1
+                         if self._current_page_number > 1
+                         else self._current_page_number + 1)
+            if self._go_page(neighbour) is not None:
+                self._wait_requests_finished()
+                self._go_page(self._current_page_number)
+                self._wait_requests_finished()
+
+            links = get_unique_links()
+            if links:
+                break
+            retries -= 1
+        return links
+
+    def _parse_url(self, writer: FileWriter, resume_page: Optional[int] = None) -> None:
+        """Parse a single URL (one browser session). May be called again with
+        a `resume_page` after a browser restart to continue where it stopped."""
+        # Starting from page 6 and further 2GIS redirects to the beginning
+        # (anti-bot protection). We manually walk to the target page first.
         url = re.sub(r'/page/\d+', '', self._url, re.I)
 
-        page_match = re.search(r'/page/(?P<page_number>\d+)', self._url, re.I)
-        if page_match:
-            walk_page_number = int(page_match.group('page_number'))
+        if resume_page and resume_page > 1:
+            # Resume after a crash: walk back to where we stopped.
+            walk_page_number: Optional[int] = resume_page
         else:
-            walk_page_number = None
+            page_match = re.search(r'/page/(?P<page_number>\d+)', self._url, re.I)
+            walk_page_number = int(page_match.group('page_number')) if page_match else None
+
+        self._current_page_number = 1
 
         # Go URL
         self._chrome_remote.navigate(url, referer='https://google.com', timeout=120)
@@ -212,14 +293,10 @@ class MainParser:
             if self._options.skip_404_response:
                 return
 
-        # Read expected total count reported by 2GIS ("Найдено N")
-        self._read_expected_count(writer)
-
-        # Parsed records
-        collected_records = 0
-
-        # Already visited links
-        visited_links: set[str] = set()
+        # Read expected total count reported by 2GIS ("Найдено N").
+        # Only on a fresh start — no need to re-read it after a restart.
+        if not resume_page:
+            self._read_expected_count(writer)
 
         # This wrapper is not necessary, but I'd like to be sure
         # we haven't gathered links from old DOM somehow.
@@ -227,10 +304,10 @@ class MainParser:
         def get_unique_links() -> list[DOMNode]:
             links = self._get_links()
             link_addresses = set(x.attributes['href'] for x in links)
-            if link_addresses & visited_links:
+            if link_addresses & self._visited_links:
                 return []
 
-            visited_links.update(link_addresses)
+            self._visited_links.update(link_addresses)
             return links
 
         while True:
@@ -239,6 +316,10 @@ class MainParser:
 
             # Gather links to be clicked
             links = get_unique_links()
+
+            # Retry an unexpectedly empty page before treating it as the end.
+            if not walk_page_number and not links:
+                links = self._retry_empty_page(get_unique_links)
 
             # We should parse the page if we are not walking
             if not walk_page_number:
@@ -276,17 +357,17 @@ class MainParser:
                     if doc:
                         # Write API document into a file
                         writer.write(doc)
-                        collected_records += 1
+                        self._collected_records += 1
                     else:
                         logger.error('Данные не получены, пропуск позиции.')
 
                     # We've reached our limit, bail
-                    if collected_records >= self._options.max_records:
+                    if self._collected_records >= self._options.max_records:
                         logger.info('Спарсено максимально разрешенное количество записей с данного URL.')
                         return
 
             # Evaluate Garbage Collection if it's been exposed and enabled
-            if self._options.use_gc and current_page_number % self._options.gc_pages_interval == 0:
+            if self._options.use_gc and self._current_page_number % self._options.gc_pages_interval == 0:
                 logger.debug('Запуск сборщика мусора.')
                 self._chrome_remote.execute_script('"gc" in window && window.gc()')
 
@@ -297,18 +378,19 @@ class MainParser:
             if walk_page_number:
                 available_pages = self._get_available_pages()
                 available_pages_ahead = {k: v for k, v in available_pages.items()
-                                         if k > current_page_number}
+                                         if k > self._current_page_number}
                 next_page_number = min(available_pages_ahead, key=lambda n: abs(n - walk_page_number),  # type: ignore
-                                       default=current_page_number + 1)
+                                       default=self._current_page_number + 1)
             else:
-                next_page_number = current_page_number + 1
+                next_page_number = self._current_page_number + 1
 
-            current_page_number = self._go_page(next_page_number)  # type: ignore
-            if not current_page_number:
+            page = self._go_page(next_page_number)
+            if not page:
                 break  # Reached the end of the search results
+            self._current_page_number = page
 
             # Unset walking page if we've done walking to the desired page
-            if walk_page_number and walk_page_number <= current_page_number:
+            if walk_page_number and walk_page_number <= self._current_page_number:
                 walk_page_number = None
 
     def close(self) -> None:

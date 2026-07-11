@@ -1,53 +1,59 @@
 #!/usr/bin/env python3
-"""Запуск парсера из Python (без ввода команд в терминал).
+"""Запуск парсера из Python с авто-генерацией ссылок и имён файлов.
 
-Открой этот файл в VS Code и нажми "Run" (или запусти: python run_parse.py).
-Меняй настройки ниже под свою задачу.
+Ты указываешь: город, список rubricId, папку для результатов и настройки.
+Для каждой рубрики скрипт сам:
+  * собирает ссылку выдачи 2GIS,
+  * формирует имя файла вида  city_rubricname_rubricID  (напр. moscow_Кафе_161.csv),
+  * запускает парсер и сохраняет результат в указанную папку.
+
+Открой в VS Code и нажми Run (или: python run_parse.py).
 """
+import os
+
+from parser_helpers import find_city, rubric_label, build_url, build_filename
 
 from parser_2gis.config import Configuration
-from parser_2gis.logger import setup_cli_logger
+from parser_2gis.logger import setup_cli_logger, logger
 from parser_2gis.runner import CLIRunner
 
-# ---------------------------------------------------------------------------
-# 1. Что парсим (можно несколько ссылок — колонка "Ссылка запроса"
-#    у каждой точки покажет, из какой именно она пришла).
-URLS = [
-    'https://2gis.ru/moscow/search/кафе/rubricId/161',
-    # 'https://2gis.ru/moscow/search/аптеки',
-]
+# ============================ НАСТРОЙКИ ============================
+CITY = 'moscow'                       # код ('moscow') или название ('Москва')
+RUBRIC_IDS = ["367"]                  # список rubricId — по одному файлу на рубрику
+OUTPUT_DIR = 'MLSD_moscow'                # папка для результатов (создастся, если нет)
+FORMAT = 'csv'                        # 'csv' | 'xlsx' | 'json' | 'jsonl'
 
-# 2. Куда и в каком формате сохранить.
-OUTPUT_PATH = 'test.xlsx'      # имя файла
-FORMAT = 'xlsx'                # 'csv' | 'xlsx' | 'json' | 'jsonl'
-
-# ---------------------------------------------------------------------------
-# 3. Настройки. Всё опционально — что не тронешь, останется по умолчанию.
 config = Configuration()
-
-# Сколько записей максимум с одной ссылки.
-config.parser.max_records = 20
-
-# Удалять ли дубли (одна и та же точка). Для анализа рубрик ставь False,
-# чтобы видеть все вхождения точки в разные рубрики.
-config.writer.csv.remove_duplicates = False
-
-# Удалять ли пустые колонки в конце.
-config.writer.csv.remove_empty_columns = True
-
-# Показывать окно браузера (False) или работать в фоне headless (True).
-config.chrome.headless = False
-
-# Отключить картинки в браузере — быстрее и меньше памяти (полезно для крупных рубрик).
+config.parser.max_records = 100000               # практически без ограничения
+config.writer.csv.remove_duplicates = False       # не удалять дубли
+config.writer.csv.remove_empty_columns = False
+config.chrome.headless = False                    # True — работать в фоне без окна
 config.chrome.disable_images = True
+config.parser.delay_between_clicks = 230            # 100-300 для крупных прогонов
+config.parser.use_gc = True
+config.parser.gc_pages_interval = 5
 
-# Задержка между кликами по карточкам, мс. Ставь 100-300 для крупных прогонов,
-# чтобы 2GIS не блокировал за частые запросы.
-config.parser.delay_between_clicks = 0
+config.parser.empty_page_retries = 3
+config.parser.empty_page_retry_delay = 4000     # мс
+config.parser.max_browser_restarts = 5          # 0 — выключить докачку
+# ==================================================================
 
-# ---------------------------------------------------------------------------
 if __name__ == '__main__':
     setup_cli_logger(config.log)
-    runner = CLIRunner(URLS, OUTPUT_PATH, FORMAT, config)
-    runner.start()
-    print(f'\nГотово. Результат: {OUTPUT_PATH}')
+
+    city = find_city(CITY)
+    os.makedirs(OUTPUT_DIR, exist_ok=True)
+
+    for rid in RUBRIC_IDS:
+        name = rubric_label(rid)
+        if name is None:
+            logger.warning('rubricId %s не найден в rubrics.json — пропуск', rid)
+            continue
+
+        url = build_url(city, rid)
+        out_path = os.path.join(OUTPUT_DIR, build_filename(city, rid, ext=FORMAT))
+
+        logger.info('=== %s (id %s) -> %s ===', name, rid, out_path)
+        CLIRunner([url], out_path, FORMAT, config).start()
+
+    print(f'\nГотово. Результаты в папке: {os.path.abspath(OUTPUT_DIR)}')
