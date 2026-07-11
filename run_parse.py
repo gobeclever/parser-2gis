@@ -29,11 +29,11 @@ config.writer.csv.remove_duplicates = False       # не удалять дубл
 config.writer.csv.remove_empty_columns = False
 config.chrome.headless = False                    # True — работать в фоне без окна
 config.chrome.disable_images = True
-config.parser.delay_between_clicks = 230            # 100-300 для крупных прогонов
+config.parser.delay_between_clicks = 350            # 100-300 для крупных прогонов
 config.parser.use_gc = True
 config.parser.gc_pages_interval = 5
 
-config.parser.empty_page_retries = 3
+config.parser.empty_page_retries = 4
 config.parser.empty_page_retry_delay = 4000     # мс
 config.parser.max_browser_restarts = 5          # 0 — выключить докачку
 # ==================================================================
