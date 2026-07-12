@@ -233,15 +233,16 @@ class MainParser:
                 logger.warning('Мягкая блокировка на странице %s. Перезапуск браузера и докачка '
                                '(осталось попыток: %s).', e.page, restarts_left)
                 self._restart_browser()
-            except (ChromeRuntimeException, ChromeUserAbortException) as e:
-                # Recover only from a real tab crash / detach.
+            except (ChromeRuntimeException, ChromeUserAbortException, TimeoutError) as e:
+                # Recover from a tab crash / detach or a hung browser (timeout).
                 if restarts_left <= 0:
-                    logger.error('Исчерпан лимит перезапусков браузера. Остановка.')
+                    logger.error('Исчерпан лимит перезапусков браузера. Остановка '
+                                 '(собранные данные сохранены).')
                     return
                 restarts_left -= 1
                 resume_page = self._current_page_number
-                logger.warning('Вкладка браузера упала (%s). Перезапуск и докачка со страницы %s '
-                               '(осталось попыток: %s).', e, resume_page, restarts_left)
+                logger.warning('Сбой браузера (%s). Перезапуск и докачка со страницы %s '
+                               '(осталось попыток: %s).', type(e).__name__, resume_page, restarts_left)
                 self._restart_browser()
 
     def _pages_ahead_exist(self) -> bool:

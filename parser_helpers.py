@@ -30,6 +30,23 @@ def load_rubrics() -> dict:
         return json.load(f)
 
 
+@lru_cache(maxsize=1)
+def load_districts() -> dict:
+    path = os.path.join(DATA_DIR, 'districts.json')
+    if not os.path.isfile(path):
+        return {}
+    with open(path, encoding='utf-8') as f:
+        return json.load(f)
+
+
+def list_districts(city_code: str) -> list:
+    """Список районов города: [{'name':..., 'id':...}, ...].
+
+    Используется для дробления крупных рубрик по районам, чтобы каждый запрос
+    оставался ниже потолка выдачи 2GIS (~9000)."""
+    return load_districts().get(city_code, [])
+
+
 def find_city(name_or_code: str) -> dict:
     """Найти город по коду ('moscow') или названию ('Москва')."""
     key = str(name_or_code).strip().lower()
@@ -83,3 +100,26 @@ def build_filename(city: dict, rubric_id: str | int,
     """Имя файла вида city_rubricname_rubricID.ext (например moscow_Кафе_161.csv)."""
     label = label or rubric_label(rubric_id) or 'rubric'
     return f'{city["code"]}_{_sanitize(label)}_{rubric_id}.{ext.lstrip(".")}'
+
+
+def build_district_url(city: dict, rubric_id: str | int, district_id: str | int,
+                       label: str | None = None, sort_by_name: bool = False) -> str:
+    """Ссылка выдачи 2GIS, отфильтрованная по району (district_id).
+
+    Каждый такой запрос ограничен одним районом и почти всегда даёт меньше
+    точек, чем общий потолок 2GIS (~9000)."""
+    label = label or rubric_label(rubric_id) or ''
+    url = f'https://2gis.{city["domain"]}/{city["code"]}/search/{encode_query(label)}'
+    url += f'/rubricId/{rubric_id}'
+    url += f'/filters/district_id={district_id}'
+    return url
+
+
+def build_district_filename(city: dict, rubric_id: str | int,
+                            district_name: str, label: str | None = None,
+                            ext: str = 'csv') -> str:
+    """Имя файла вида city_district_rubricname_rubricID.ext
+    (например moscow_Академический_Супермаркеты_350.csv)."""
+    label = label or rubric_label(rubric_id) or 'rubric'
+    return (f'{city["code"]}_{_sanitize(district_name)}_'
+            f'{_sanitize(label)}_{rubric_id}.{ext.lstrip(".")}')
