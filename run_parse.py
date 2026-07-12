@@ -19,8 +19,8 @@ from parser_2gis.runner import CLIRunner
 
 # ============================ НАСТРОЙКИ ============================
 CITY = 'moscow'                       # код ('moscow') или название ('Москва')
-RUBRIC_IDS = ["367"]                  # список rubricId — по одному файлу на рубрику
-OUTPUT_DIR = 'MLSD_moscow'                # папка для результатов (создастся, если нет)
+RUBRIC_IDS = ["373","350"]                  # список rubricId — по одному файлу на рубрику
+OUTPUT_DIR = 'MLSD_moscow_zerkalo'                # папка для результатов (создастся, если нет)
 FORMAT = 'csv'                        # 'csv' | 'xlsx' | 'json' | 'jsonl'
 
 config = Configuration()
@@ -29,11 +29,11 @@ config.writer.csv.remove_duplicates = False       # не удалять дубл
 config.writer.csv.remove_empty_columns = False
 config.chrome.headless = False                    # True — работать в фоне без окна
 config.chrome.disable_images = True
-config.parser.delay_between_clicks = 350            # 100-300 для крупных прогонов
+config.parser.delay_between_clicks = 450            # 100-300 для крупных прогонов
 config.parser.use_gc = True
 config.parser.gc_pages_interval = 5
 
-config.parser.empty_page_retries = 4
+config.parser.empty_page_retries = 1
 config.parser.empty_page_retry_delay = 4000     # мс
 config.parser.max_browser_restarts = 5          # 0 — выключить докачку
 # ==================================================================

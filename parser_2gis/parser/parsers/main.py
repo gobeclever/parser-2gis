@@ -19,6 +19,14 @@ if TYPE_CHECKING:
     from ..options import ParserOptions
 
 
+class _SoftBlockError(Exception):
+    """Raised when 2GIS keeps serving an empty results page while more results
+    exist (persistent soft anti-bot). Triggers a full browser restart + resume."""
+    def __init__(self, page: int) -> None:
+        super().__init__(f'Soft block at page {page}')
+        self.page = page
+
+
 class MainParser:
     """Main parser that extracts useful payload
     from search result pages using Chrome browser
@@ -213,6 +221,18 @@ class MainParser:
             try:
                 self._parse_url(writer, resume_page)
                 return  # Finished normally
+            except _SoftBlockError as e:
+                # Persistent empty pages (soft anti-bot). A fresh browser
+                # session often clears it — restart and resume from that page.
+                if restarts_left <= 0:
+                    logger.error('Мягкая блокировка не снята после перезапусков. '
+                                 'Остановка на странице %s.', e.page)
+                    return
+                restarts_left -= 1
+                resume_page = e.page
+                logger.warning('Мягкая блокировка на странице %s. Перезапуск браузера и докачка '
+                               '(осталось попыток: %s).', e.page, restarts_left)
+                self._restart_browser()
             except (ChromeRuntimeException, ChromeUserAbortException) as e:
                 # Recover only from a real tab crash / detach.
                 if restarts_left <= 0:
@@ -223,6 +243,11 @@ class MainParser:
                 logger.warning('Вкладка браузера упала (%s). Перезапуск и докачка со страницы %s '
                                '(осталось попыток: %s).', e, resume_page, restarts_left)
                 self._restart_browser()
+
+    def _pages_ahead_exist(self) -> bool:
+        """Whether the pagination shows page numbers beyond the current one."""
+        available = self._get_available_pages()
+        return bool(available) and max(available) > self._current_page_number
 
     def _retry_empty_page(self, get_unique_links: Callable[[], list[DOMNode]]) -> list[DOMNode]:
         """Retry an unexpectedly empty results page (soft anti-bot).
@@ -317,9 +342,21 @@ class MainParser:
             # Gather links to be clicked
             links = get_unique_links()
 
-            # Retry an unexpectedly empty page before treating it as the end.
+            # Handle an empty page.
             if not walk_page_number and not links:
-                links = self._retry_empty_page(get_unique_links)
+                if self._get_links():
+                    # Page has firm links but all of them were already
+                    # collected — this is the resume boundary after a restart.
+                    # Just move on to the next page.
+                    pass
+                else:
+                    # Server returned a truly empty page. Retry it, and if it
+                    # still comes up empty while more results exist ahead,
+                    # escalate to a full browser restart (fresh session often
+                    # clears the soft block).
+                    links = self._retry_empty_page(get_unique_links)
+                    if not links and not self._get_links() and self._pages_ahead_exist():
+                        raise _SoftBlockError(self._current_page_number)
 
             # We should parse the page if we are not walking
             if not walk_page_number:
