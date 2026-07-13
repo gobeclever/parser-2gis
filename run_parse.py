@@ -77,12 +77,14 @@ if __name__ == '__main__':
             logger.info('Рубрика "%s" (id %s): дробление по %s районам.', name, rid, len(districts))
             seen_names: set[str] = set()
             for d in districts:
-                fname = build_district_filename(city, rid, d['name'], ext=FORMAT)
+                dname = d['name']
+                fname = build_district_filename(city, rid, dname, ext=FORMAT)
                 if fname in seen_names:
                     # Разные районы с одинаковым названием (напр. два «Северный»)
-                    # — разводим по id, чтобы файлы не перезаписывали друг друга.
-                    base, ext = os.path.splitext(fname)
-                    fname = f'{base}_{d["id"]}{ext}'
+                    # — уникализируем сам район его id, при этом номер рубрики
+                    # остаётся в конце имени файла (важно для merge_csv).
+                    dname = f'{d["name"]} {d["id"]}'
+                    fname = build_district_filename(city, rid, dname, ext=FORMAT)
                 seen_names.add(fname)
                 url = build_district_url(city, rid, d['id'])
                 run_one(url, os.path.join(OUTPUT_DIR, fname), f'{name} / {d["name"]}')
