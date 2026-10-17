@@ -22,11 +22,11 @@ from parser_2gis.runner import CLIRunner
 
 # ============================ НАСТРОЙКИ ============================
 CITY = 'moscow'                       # код ('moscow') или название ('Москва')
-RUBRIC_IDS = ["373", "350"]           # список rubricId
-OUTPUT_DIR = 'MLSD_moscow_zerkalo'    # папка для результатов (создастся, если нет)
+RUBRIC_IDS = ["652"]           # список rubricId
+OUTPUT_DIR = 'MLSD_moscow'    # папка для результатов (создастся, если нет)
 FORMAT = 'csv'                        # 'csv' | 'xlsx' | 'json' | 'jsonl'
 
-SPLIT_BY_DISTRICT = True              # True — дробить по районам (для гигантов); False — город целиком
+SPLIT_BY_DISTRICT = False              # True — дробить по районам (для гигантов); False — город целиком
 SKIP_EXISTING = True                  # пропускать уже готовые файлы (удобно для докачки большого прогона)
 
 config = Configuration()
